@@ -27,12 +27,11 @@ class StreamingJsonParser:
             print(f"Next char at index({index}): {next_char}")
             if next_char == " ":
                 index += 1
-                continue
-
-            if next_char == "{":
+            elif next_char == "{":
                 print("Found starting bracket, parsing object")
+                self.stack.append({})
                 index = self.parse_object(chunk, index + 1)
-            if next_char == '"':
+            elif next_char == '"':
                 print("Found quote, parsing string")
                 index = self.__parse_quotes(chunk, index)
             elif next_char == "}":
@@ -71,6 +70,7 @@ class StreamingJsonParser:
         else:
             index = self.__parse_value(chunk, index + 1)
 
+        print(f"Returning index: {index}, with character: {chunk[index]}")
         return index
 
     def __parse_key(self, chunk: str, index: int) -> int:
@@ -81,8 +81,9 @@ class StreamingJsonParser:
 
         self.last_key = chunk[index:last_occurrence]
         print(f"Key found: {self.last_key}")
-        self.stack.append({self.last_key: None})
-        self.streamed_json = self.stack[-1]
+        obj = self.stack[-1]
+        obj[self.last_key] = None
+        self.streamed_json = obj
         index = last_occurrence + 1
 
         print(f"Saved stack: {self.stack}")
@@ -105,21 +106,35 @@ class StreamingJsonParser:
         last_occurrence = chunk.find('"', index + 1)
         if last_occurrence == -1:
             raise JSONDecodeError
-        obj = self.stack.pop()
+        obj = self.stack[-1]
         value = chunk[index : last_occurrence + 1]
         print(f"Value found: {value}")
+        print(f"Object: {obj}")
         obj[self.last_key] = value
         self.streamed_json = obj
         self.last_key = None
         self.last_value = None
 
-        return last_occurrence + 1
+        index = last_occurrence + 1
+
+        while index < len(chunk) and chunk[index] == " ":
+            index += 1
+
+        if chunk[index] == ",":
+            index += 1
+
+        return index
 
     def get(self):
         return self.streamed_json
 
 
-sample_json = '{ "key": "value" }'
-parser = StreamingJsonParser()
-parser.consume(sample_json)
-print(parser.get())
+# sample_json = '{ "key": "value" }'
+# parser = StreamingJsonParser()
+# parser.consume(sample_json)
+# print(parser.get())
+
+sample_json = '{ "key": "value", "key2": "value2" }'
+parser2 = StreamingJsonParser()
+parser2.consume(sample_json)
+print(parser2.get())
