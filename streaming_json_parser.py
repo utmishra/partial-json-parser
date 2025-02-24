@@ -1,141 +1,122 @@
+import json
+from enum import Enum
+
+
+class ParsingState(Enum):
+    START = 0
+    EXPECTING_KEY = 1
+    EXPECTING_VALUE = 2
+    EXPECTING_COLON = 3
+    EXPECTING_PARTIAL_VALUE = 4
+
+
 class StreamingJsonParser:
     def __init__(self):
-        self.buffer = None
-        self.streamed_json = dict()
-        self.stack = []
-        self.last_key_stack = []
-        self.last_value_stack = []
+        self.root: dict = {}
+        self.stack: List[str] = []
+        self.last_key: str | None = None
+        self.partial_token = ""
+        self.current_state: ParsingState = ParsingState.START
 
     def consume(self, buffer: str):
-        self.__scan__once(buffer, 0)
+        pos = 0
 
-    def __scan__once(self, chunk: str, index: int):
-        try:
-            chunk = chunk.strip()
-            next_char = chunk[index]
-        except IndexError:
-            raise StopIteration(index) from None
+        while pos < len(buffer):
+            char = buffer[pos]
 
-        while index < len(chunk):
-            next_char = chunk[index]
-            print(f"__scan__once: next_char: {next_char}, index: {index}")
-            if next_char == " " or next_char == ",":
-                index += 1
-            elif next_char == "{":
-                print("__scan__once: Parsing object")
-                self.stack.append({})
-                index = self.__parse__object__(chunk, index + 1)
-            elif next_char == '"':
-                print("__scan__once: Parsing string")
-                index = self.__parse_quotes__(chunk, index)
-            elif next_char == "}":
-                obj = self.stack.pop()
-                print(
-                    f"__scan__once: Closing bracket. Saving obj: {obj} to {self.last_key_stack}"
-                )
-                if self.last_key_stack:
-                    last_key = self.last_key_stack.pop()
-                    self.stack[-1][last_key] = obj
+            if self.current_state == ParsingState.EXPECTING_PARTIAL_VALUE:
+                if char == '"':
+                    self.handle_completed_token()
                 else:
-                    self.streamed_json = obj
+                    self.partial_token += char
+                    self.handle_partial_token()
+                pos += 1
+                continue
 
-                index += 1
-            else:
-                raise IOError("Invalid character found")
+            match char:
+                case " " | ",":
+                    pos += 1
+                case "{":
+                    self.handle_start_quote()
+                    pos += 1
+                case ":":
+                    if self.current_state == ParsingState.EXPECTING_COLON:
+                        self.current_state = ParsingState.EXPECTING_VALUE
+                    pos += 1
+                case '"':
+                    pos = self.parse_quotes(buffer, pos)
+                case "}":
+                    if self.current_state == ParsingState.EXPECTING_PARTIAL_VALUE:
+                        raise ValueError(
+                            f"Expecting {self.last_key}'s value. (Ending) curly brace passed"
+                        )
 
-    def parse_string(self, chunk: str, index: int):
-        print(f"Parsing string: {chunk}")
+                    pos += 1
+                case "[" | "]":
+                    raise ValueError("Array's are currently not supported")
 
-    def __parse__object__(self, chunk: str, index: int) -> int:
-        while index < len(chunk) and chunk[index] == " ":
-            index += 1
+    def handle_start_quote(self):
+        if self.current_state == ParsingState.EXPECTING_PARTIAL_VALUE:
+            raise ValueError(
+                f"Expecting {self.last_key}'s value. (Starting) curly brace passed"
+            )
 
-        next_char = chunk[index]
-
-        if next_char == '"':
-            return self.__parse_quotes__(chunk, index)
+        if not self.stack:
+            self.stack = self.root
         else:
-            raise IOError("__parse__object__: Invalid symbol")
+            # Nested object
+            parent_obj = self.stack
+            parent_obj[self.last_key] = {}
+            self.stack = parent_obj[self.last_key]
+            self.last_key = None
+            self.current_state = ParsingState.EXPECTING_KEY
 
-    def __parse_quotes__(self, chunk: str, index: int) -> int:
-        if not self.stack or (
-            len(self.last_key_stack) == 0
-            or self.last_key_stack[-1] not in self.stack[-1]
+    def parse_quotes(self, buffer: str, pos: int) -> int:
+        end_quote_pos = buffer.find('"', pos + 1)
+
+        if end_quote_pos < 0:
+            self.partial_token = buffer[pos + 1 :]
+            self.handle_partial_token()
+
+            return len(buffer)
+
+        quote_token = buffer[pos + 1 : end_quote_pos]
+        if (
+            self.current_state != ParsingState.EXPECTING_PARTIAL_VALUE
+            and not self.last_key
         ):
-            index = self.__parse_key__(chunk, index + 1)
-        else:
-            index = self.__parse_value__(chunk, index + 1)
+            self.parse_key(quote_token)
 
-        return index
+        elif self.current_state == ParsingState.EXPECTING_VALUE:
+            self.parse_value(quote_token)
 
-    def __parse_key__(self, chunk: str, index: int) -> int:
-        # Current string is key
-        print("__parse_key__: Parsing key")
-        last_occurrence = chunk.find('"', index + 1)
-        if last_occurrence == -1:
-            raise IOError("__parse__key__: Closing quote not found")
+        return end_quote_pos + 1
 
-        self.last_key_stack.append(chunk[index:last_occurrence])
-        print(f"__parse_key__: Key found: {self.last_key_stack}")
-        obj = self.stack[-1]
-        obj[self.last_key_stack[-1]] = None
-        # TODO: Partial state needs to be saved later
-        # self.streamed_json = obj
-        index = last_occurrence + 1
-        """
-            { "key1": "value2" }
-        """
+    def handle_partial_token(self) -> int:
+        if not self.last_key:
+            raise BufferError("Invalid symbol found, expecting value")
 
-        print(f"__parse_key__: Saved stack: {self.stack}")
+        self.current_state = ParsingState.EXPECTING_PARTIAL_VALUE
 
-        print(f"__parse_key__: Saved value: {self.streamed_json}")
+        self.stack[self.last_key] = self.partial_token
 
-        # Look for colon (:)
-        while index < len(chunk) and chunk[index] == " ":
-            index += 1
+    def handle_completed_token(self):
+        self.partial_token = None
+        self.last_key = None
+        self.current_state = ParsingState.EXPECTING_KEY
 
-        if chunk[index] != ":":
-            raise IOError("__parse_key__: Colon not found")
+    def parse_key(self, key: str):
+        self.last_key = key
 
-        print(f"__parse_key__: Colon found at index: {index}")
+        self.current_state = ParsingState.EXPECTING_COLON
 
-        return index + 1
+        self.stack[key] = ""
 
-    def __parse_value__(self, chunk: str, index: int):
-        # Current string is value
-        print("__parse_value__: Parsing value")
-        last_occurrence = chunk.find('"', index + 1)
-        if last_occurrence == -1:
-            raise JSONDecodeError
-        obj = self.stack[-1]
-        value = chunk[index : last_occurrence + 1]
-        print(f"__parse_value__: Stack: {self.stack}")
-        print(f"__parse_value__: Value found: {value}")
-        print(f"__parse_value__: Last key stack: {self.last_key_stack}")
-        obj[self.last_key_stack[-1]] = value
-        self.last_key_stack.pop()
+    def parse_value(self, value: str):
+        self.stack[self.last_key] = value
 
-        print(f"__parse_value__: Updated value: {self.stack}")
+        self.last_key = None
+        self.current_state = ParsingState.EXPECTING_KEY
 
-        return last_occurrence + 1
-
-    def get(self):
-        return self.streamed_json
-
-
-# sample_json = '{ "key": "value" }'
-# parser = StreamingJsonParser()
-# parser.consume(sample_json)
-# print(parser.get())
-
-# sample_json = '{ "key": "value", "key2": "value2" }'
-# parser2 = StreamingJsonParser()
-# parser2.consume(sample_json)
-# print(parser2.get())
-
-# sample_json = '{ "key": "value", "key2": { "subKey": "subValue" } }'
-# sample_json = '{ "key": "value", "key2": "value2" }'
-sample_json = '{ "key": "value", "key2": { "subKey": { "subSubKey": "subSubValue" } } }'
-parser3 = StreamingJsonParser()
-parser3.consume(sample_json)
-print(parser3.get())
+    def get(self) -> dict:
+        return self.root
