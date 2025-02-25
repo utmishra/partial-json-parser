@@ -21,6 +21,14 @@ class StreamingJsonParser:
     Leverage state-machine like transitions to parse expected data based on the current state.
     The active state also helps in validating the incoming data.
     Currently works only for strings and objects.
+
+    Possible improvements:
+    - Caching, memoization for known schema & dictionary, function call lookups
+    - Stricter state machine flow (Currently some states are skipped or not strictly monitored)
+    - Enhanced error handling (and logging) for invalid JSON structures
+    - Consistent partial token handler behavior (currently accepts character-by-character & partial strings)
+
+    Demo, Benchmark & test cases: https://replit.com/@utmishra1/Partial-JSON-Streaming-Parser-for-LLM-Demo?v=1
     """
 
     WHITESPACE = re.compile(r"[ \t\n\r]+")
@@ -32,6 +40,9 @@ class StreamingJsonParser:
         ParsingState.EXPECTING_COLON,
     ]
 
+    """
+    This can possibly be improved by adding more state based invalid characters.
+    """
     INVALID_CHARS_BY_STATE = {
         ParsingState.EXPECTING_VALUE: {","},
         ParsingState.EXPECTING_COLON: {",", "{", "}", '"'},
@@ -130,12 +141,13 @@ class StreamingJsonParser:
         """
         Certain characters shouldn't be allowed during specific states,
         example: If a value is expected after a key, a comma shouldn't occur
+        Note: We can improve performance slightly if we move this call within consume.
+        Kept it here to avoid bloating the consume method further.
         """
-        invalid_chars = self.INVALID_CHARS_BY_STATE.get(self.current_state, set())
-        if char in invalid_chars:
-            raise ValueError(
-                f"Invalid symbol '{char}' during {self.current_state} state"
-            )
+        state = self.current_state  # Cache the current state in a local variable.
+        invalid_chars = self.INVALID_CHARS_BY_STATE.get(state)
+        if invalid_chars and char in invalid_chars:
+            raise ValueError(f"Invalid symbol '{char}' during {state} state")
 
     def handle_new_object(self):
         """
