@@ -12,12 +12,25 @@ class ParsingState(Enum):
 
 
 class StreamingJsonParser:
+    WHITESPACE_ACCEPTING_STATES = [
+        ParsingState.START,
+        ParsingState.EXPECTING_KEY,
+        ParsingState.EXPECTING_VALUE,
+        ParsingState.EXPECTING_COLON,
+    ]
+
+    INVALID_CHARS_BY_STATE = {
+        ParsingState.EXPECTING_VALUE: {","},
+        ParsingState.EXPECTING_COLON: {","},
+        ParsingState.EXPECTING_PARTIAL_KEY: {" "},
+    }
+
     def __init__(self):
-        self.root: dict = {}
-        self.stack: List[str] = []
+        self.root: dict[str, str] = {}
+        self.object_stack: list[dict[str, any]] = [self.root]
         self.last_key: str | None = None
-        self.partial_token_value = ""
-        self.partial_token_key = ""
+        self.partial_token_value: str = ""
+        self.partial_token_key: str = ""
         self.current_state: ParsingState = ParsingState.START
 
     def consume(self, buffer: str):
@@ -26,13 +39,12 @@ class StreamingJsonParser:
         while pos < len(buffer):
             char = buffer[pos]
 
-            if self.current_state in [
-                ParsingState.EXPECTING_KEY,
-                ParsingState.EXPECTING_PARTIAL_KEY,
-            ] and char in [","]:
-                raise ValueError(
-                    "Invalid symbol. Expecting a valid/partial key or value"
-                )
+            if self.current_state in self.WHITESPACE_ACCEPTING_STATES:
+                if char in [" ", "\n", "\r", "\t"]:
+                    pos += 1
+                    continue
+
+            self.validate_state_based_chars(char)
 
             if self.current_state == ParsingState.EXPECTING_PARTIAL_KEY:
                 self.handle_partial_token_key(char)
@@ -45,7 +57,7 @@ class StreamingJsonParser:
                 continue
 
             match char:
-                case " " | "," | "}":
+                case " " | ",":
                     pos += 1
                 case "{":
                     self.handle_new_object()
@@ -56,8 +68,18 @@ class StreamingJsonParser:
                     pos += 1
                 case '"':
                     pos = self.parse_quotes(buffer, pos)
+                case "}":
+                    self.handle_close_object()
+                    pos += 1
                 case "[" | "]":
                     raise ValueError("Array's are currently not supported")
+
+    def validate_state_based_chars(self, char: str):
+        invalid_chars = self.INVALID_CHARS_BY_STATE.get(self.current_state, set())
+        if char in invalid_chars:
+            raise ValueError(
+                f"Invalid symbol '{char}' during {self.current_state} state"
+            )
 
     def handle_new_object(self):
         if self.current_state == ParsingState.EXPECTING_PARTIAL_VALUE:
@@ -65,14 +87,23 @@ class StreamingJsonParser:
                 f"Expecting {self.last_key}'s value. (Starting) curly brace passed"
             )
 
-        if not self.stack:
-            self.stack = self.root
-        else:
-            # Nested object
-            parent_obj = self.stack
-            parent_obj[self.last_key] = {}
-            self.stack = parent_obj[self.last_key]
+        if self.current_state in [ParsingState.START, ParsingState.EXPECTING_KEY]:
+            if self.current_state == ParsingState.START:
+                self.current_state = ParsingState.EXPECTING_KEY
+            else:
+                raise ValueError("Unexpected '{'. Expecting a key")
+        elif self.current_state in [ParsingState.EXPECTING_VALUE] and self.last_key:
+            new_obj: Dict[str, str] = {}
+            self.object_stack[-1][self.last_key] = new_obj
+            self.object_stack.append(new_obj)
             self.last_key = None
+            self.current_state = ParsingState.EXPECTING_KEY
+        else:
+            raise ValueError("Unexpected '{'")
+
+    def handle_close_object(self):
+        if len(self.object_stack) > 1:
+            self.object_stack.pop()
             self.current_state = ParsingState.EXPECTING_KEY
 
     def parse_quotes(self, buffer: str, pos: int) -> int:
@@ -112,16 +143,16 @@ class StreamingJsonParser:
         self.partial_token_key = ""
         self.current_state = ParsingState.EXPECTING_VALUE
 
-    def handle_partial_token_value(self, char: str) -> int:
+    def handle_partial_token_value(self, char: str):
         if char == '"':
             return self.handle_completed_token_value()
         else:
             self.partial_token_value += char
 
         if not self.last_key:
-            raise BufferError("Invalid symbol found, expecting value")
+            raise ValueError("Invalid symbol found, expecting value")
 
-        self.stack[self.last_key] = self.partial_token_value
+        self.object_stack[-1][self.last_key] = self.partial_token_value
 
     def handle_completed_token_value(self):
         self.partial_token_value = ""
@@ -133,10 +164,10 @@ class StreamingJsonParser:
 
         self.current_state = ParsingState.EXPECTING_COLON
 
-        self.stack[key] = ""
+        self.object_stack[-1][key] = ""
 
     def parse_value(self, value: str):
-        self.stack[self.last_key] = value
+        self.object_stack[-1][self.last_key] = value
 
         self.last_key = None
         self.current_state = ParsingState.EXPECTING_KEY
