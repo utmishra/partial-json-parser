@@ -27,6 +27,8 @@ class StreamingJsonParser:
     - Stricter state machine flow (Currently some states are skipped or not strictly monitored)
     - Enhanced error handling (and logging) for invalid JSON structures
     - Consistent partial token handler behavior (currently accepts character-by-character & partial strings)
+    - Add a regex validator before consume loop to throw errors for invalid JSON strings
+        - This should still support partial JSON strings
 
     Demo, Benchmark & test cases: https://replit.com/@utmishra1/Partial-JSON-Streaming-Parser-for-LLM-Demo?v=1
     """
@@ -64,18 +66,6 @@ class StreamingJsonParser:
         self.partial_token_value: str = ""
         self.partial_token_key: str = ""
         self.current_state: ParsingState = ParsingState.START
-
-    def _regex_validate(self, buffer: str) -> None:
-        """
-        Validates the beginning of the buffer against a regex pattern
-        based on the current state. If the pattern does not match,
-        it raises a ValueError with context.
-        """
-        validator = self._STATE_VALIDATORS.get(self.current_state)
-        if validator and not validator.match(buffer):
-            raise ValueError(
-                f"Invalid token for state {self.current_state} in buffer: {buffer!r}"
-            )
 
     def consume(self, buffer: str):
         """
