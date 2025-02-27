@@ -31,6 +31,7 @@ class StreamingJsonParser:
         - This should still support partial JSON strings
 
     Demo, Benchmark & test cases: https://replit.com/@utmishra1/Partial-JSON-Streaming-Parser-for-LLM-Demo?v=1
+     - Requires Repl.it. Can share somewhere else if needed.
     """
 
     WHITESPACE = re.compile(r"[ \t\n\r]+")
